@@ -6,7 +6,11 @@ Importing this package enables importer-module patching without explicit API cal
 from __future__ import annotations
 
 import inspect
+import importlib.machinery
+import importlib.util
+import os
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass
 from types import FrameType, FunctionType, ModuleType
@@ -20,6 +24,8 @@ class AccelerationReport:
 
 
 _thread_state = threading.local()
+_runtime_artifacts: list[str] = []
+_compilation_guard: set[str] = set()
 
 
 def _set_last_report(report: AccelerationReport) -> None:
@@ -113,6 +119,112 @@ def _accelerate_namespace(namespace: dict[str, object], module_name: str) -> Acc
     return AccelerationReport(module_name, functions, classes)
 
 
+def _load_compiled_module(module_name: str, extension_path: str) -> ModuleType | None:
+    spec = importlib.util.spec_from_file_location(module_name, extension_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _compile_importer_module(module_name: str, module_file: str) -> ModuleType | None:
+    if module_name.startswith("_gslpython_compiled_"):
+        return None
+    if module_name in _compilation_guard:
+        return None
+    if not module_file.endswith(".py"):
+        return None
+
+    try:
+        from Cython.Build import cythonize
+        from setuptools import Distribution, Extension
+        from setuptools.command.build_ext import build_ext
+    except Exception:
+        return None
+
+    compiled_module_name = (
+        f"_gslpython_compiled_{module_name.replace('.', '_')}_{abs(hash(module_file))}"
+    )
+    build_root = tempfile.mkdtemp(prefix="gslpython-build-")
+    _runtime_artifacts.append(build_root)
+
+    extension = Extension(
+        compiled_module_name,
+        [module_file],
+        language="c++",
+    )
+    ext_modules = cythonize(
+        [extension],
+        quiet=True,
+        compiler_directives={"language_level": "3"},
+    )
+    dist = Distribution({"name": compiled_module_name, "ext_modules": ext_modules})
+    build_cmd = build_ext(dist)
+    build_cmd.build_temp = os.path.join(build_root, "temp")
+    build_cmd.build_lib = os.path.join(build_root, "lib")
+    build_cmd.ensure_finalized()
+
+    _compilation_guard.add(module_name)
+    try:
+        build_cmd.run()
+    except Exception:
+        return None
+    finally:
+        _compilation_guard.discard(module_name)
+
+    for root, _dirs, files in os.walk(build_cmd.build_lib):
+        for filename in files:
+            if not filename.startswith(compiled_module_name):
+                continue
+            if not any(filename.endswith(suffix) for suffix in importlib.machinery.EXTENSION_SUFFIXES):
+                continue
+            extension_path = os.path.join(root, filename)
+            return _load_compiled_module(compiled_module_name, extension_path)
+    return None
+
+
+def _replace_with_compiled_members(
+    namespace: dict[str, object],
+    compiled_module: ModuleType,
+    module_name: str,
+) -> AccelerationReport:
+    functions = 0
+    classes = 0
+
+    for name, original_value in list(namespace.items()):
+        if not _should_consider_for_patching(name, original_value):
+            continue
+        if not hasattr(compiled_module, name):
+            continue
+        replacement = getattr(compiled_module, name)
+
+        if isinstance(original_value, FunctionType) and callable(replacement):
+            namespace[name] = replacement
+            functions += 1
+        elif isinstance(original_value, type) and isinstance(replacement, type):
+            namespace[name] = replacement
+            classes += 1
+
+    if functions == 0 and classes == 0:
+        return _accelerate_namespace(namespace, module_name)
+    return AccelerationReport(module_name, functions, classes)
+
+
+def _attempt_runtime_cython_acceleration(
+    namespace: dict[str, object], module_name: str
+) -> AccelerationReport:
+    module_file = namespace.get("__file__")
+    if not isinstance(module_file, str):
+        return _accelerate_namespace(namespace, module_name)
+
+    compiled_module = _compile_importer_module(module_name, module_file)
+    if compiled_module is None:
+        return _accelerate_namespace(namespace, module_name)
+
+    return _replace_with_compiled_members(namespace, compiled_module, module_name)
+
+
 def _install_frame_trace(frame: FrameType, module_name: str) -> None:
     previous_trace = sys.gettrace()
     last_namespace_size = len(frame.f_globals)
@@ -123,7 +235,10 @@ def _install_frame_trace(frame: FrameType, module_name: str) -> None:
         if current_frame is frame and event in {"line", "return"}:
             namespace_size = len(current_frame.f_globals)
             if event == "return" or namespace_size != last_namespace_size:
-                _accelerate_namespace(current_frame.f_globals, module_name)
+                report = _attempt_runtime_cython_acceleration(
+                    current_frame.f_globals, module_name
+                )
+                _set_last_report(report)
                 last_namespace_size = namespace_size
             if event == "return" and sys.gettrace() is tracer:
                 sys.settrace(previous_trace)

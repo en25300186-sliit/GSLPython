@@ -59,6 +59,42 @@ class GSLPythonImportTests(unittest.TestCase):
         )
         self.assertEqual(module.REPORT.module_name, "target_module_b")
 
+    def test_compiled_members_replace_runtime_namespace(self):
+        module = _load_module_from_code(
+            "target_module_c",
+            textwrap.dedent(
+                """
+                import GSLPython, types
+
+                def _fake_compiler(_module_name, _module_file):
+                    compiled = types.ModuleType("_fake_compiled_module")
+
+                    def add(a, b):
+                        return a - b
+
+                    class Math:
+                        def mul(self, a, b):
+                            return a + b
+
+                    compiled.add = add
+                    compiled.Math = Math
+                    return compiled
+
+                GSLPython._compile_importer_module = _fake_compiler
+
+                def add(a, b):
+                    return a + b
+
+                class Math:
+                    def mul(self, a, b):
+                        return a * b
+                """
+            ),
+        )
+
+        self.assertEqual(module.add(5, 3), 2)
+        self.assertEqual(module.Math().mul(2, 3), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
