@@ -32,6 +32,8 @@ def _get_last_report() -> AccelerationReport:
 
 def _find_importer_frame() -> FrameType | None:
     frame = inspect.currentframe()
+    if frame is None:
+        return None
     candidate = None
     while frame:
         module_name = frame.f_globals.get("__name__", "")
@@ -61,7 +63,10 @@ def _mark_function_accelerated(func: FunctionType) -> FunctionType:
     if getattr(func, "__gslpython_accelerated__", False):
         return func
 
-    func.__gslpython_accelerated__ = True
+    try:
+        func.__gslpython_accelerated__ = True
+    except AttributeError:
+        return func
     return func
 
 
