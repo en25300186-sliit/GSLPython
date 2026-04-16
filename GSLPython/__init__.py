@@ -87,8 +87,9 @@ def _accelerate_namespace(namespace: dict[str, object], module_name: str) -> Acc
             continue
 
         if isinstance(value, FunctionType):
+            was_accelerated = getattr(value, "__gslpython_accelerated__", False)
             accelerated = _accelerate_function(value)
-            if accelerated is not value:
+            if not was_accelerated:
                 namespace[name] = accelerated
                 functions += 1
         elif isinstance(value, type):
@@ -116,7 +117,7 @@ def _install_frame_trace(frame: FrameType, module_name: str) -> None:
             return tracer
 
         if callable(previous_trace):
-            return previous_trace(current_frame, event, arg)
+            return previous_trace(current_frame, event, _arg)
         return None
 
     frame.f_trace = tracer
