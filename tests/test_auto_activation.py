@@ -7,15 +7,17 @@ from pathlib import Path
 
 
 def _load_module_from_code(name: str, code: str):
-    with tempfile.TemporaryDirectory() as temp_dir:
-        module_path = Path(temp_dir) / f"{name}.py"
-        module_path.write_text(code, encoding="utf-8")
-        spec = importlib.util.spec_from_file_location(name, module_path)
-        if not spec or not spec.loader:
-            raise RuntimeError(f"Unable to load module spec for {name}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+    temp_dir = tempfile.TemporaryDirectory()
+    module_path = Path(temp_dir.name) / f"{name}.py"
+    module_path.write_text(code, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    if not spec or not spec.loader:
+        temp_dir.cleanup()
+        raise RuntimeError(f"Unable to load module spec for {name}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.__gslpython_temp_dir__ = temp_dir
+    return module
 
 
 class GSLPythonImportTests(unittest.TestCase):

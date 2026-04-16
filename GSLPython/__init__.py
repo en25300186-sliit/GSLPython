@@ -117,7 +117,7 @@ def _install_frame_trace(frame: FrameType, module_name: str) -> None:
     previous_trace = sys.gettrace()
     last_namespace_size = len(frame.f_globals)
 
-    def tracer(current_frame: FrameType, event: str, arg):
+    def tracer(current_frame: FrameType, event: str, _arg):
         nonlocal last_namespace_size
 
         if current_frame is frame and event in {"line", "return"}:
@@ -131,7 +131,7 @@ def _install_frame_trace(frame: FrameType, module_name: str) -> None:
             return tracer
 
         if callable(previous_trace):
-            return previous_trace(current_frame, event, arg)
+            return previous_trace(current_frame, event, _arg)
         return None
 
     frame.f_trace = tracer
