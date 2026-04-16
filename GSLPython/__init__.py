@@ -8,7 +8,6 @@ from __future__ import annotations
 import inspect
 import sys
 from dataclasses import dataclass
-from functools import wraps
 from types import FrameType, FunctionType, ModuleType
 
 
@@ -53,12 +52,8 @@ def _accelerate_function(func: FunctionType) -> FunctionType:
     if getattr(func, "__gslpython_accelerated__", False):
         return func
 
-    @wraps(func)
-    def wrapped(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    wrapped.__gslpython_accelerated__ = True
-    return wrapped
+    func.__gslpython_accelerated__ = True
+    return func
 
 
 def _accelerate_class(cls: type) -> bool:
@@ -107,7 +102,7 @@ def _install_frame_trace(frame: FrameType, module_name: str) -> None:
     previous_trace = sys.gettrace()
     last_namespace_size = len(frame.f_globals)
 
-    def tracer(current_frame: FrameType, event: str, arg):
+    def tracer(current_frame: FrameType, event: str, _arg):
         nonlocal last_namespace_size
 
         if current_frame is frame and event in {"line", "return"}:

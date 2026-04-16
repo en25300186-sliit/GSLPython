@@ -12,7 +12,8 @@ def _load_module_from_code(name: str, code: str):
         module_path.write_text(code, encoding="utf-8")
         spec = importlib.util.spec_from_file_location(name, module_path)
         module = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader
+        if not spec or not spec.loader:
+            raise RuntimeError(f"Unable to load module spec for {name}")
         spec.loader.exec_module(module)
         return module
 
