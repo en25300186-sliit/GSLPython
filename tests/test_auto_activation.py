@@ -11,9 +11,9 @@ def _load_module_from_code(name: str, code: str):
         module_path = Path(temp_dir) / f"{name}.py"
         module_path.write_text(code, encoding="utf-8")
         spec = importlib.util.spec_from_file_location(name, module_path)
-        module = importlib.util.module_from_spec(spec)
         if not spec or not spec.loader:
             raise RuntimeError(f"Unable to load module spec for {name}")
+        module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
 
