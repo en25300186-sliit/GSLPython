@@ -70,10 +70,12 @@ class GSLPythonImportTests(unittest.TestCase):
                     compiled = types.ModuleType("_fake_compiled_module")
 
                     def add(a, b):
+                        # Intentionally different behavior to verify replacement happened.
                         return a - b
 
                     class Math:
                         def mul(self, a, b):
+                            # Intentionally different behavior to verify replacement happened.
                             return a + b
 
                     compiled.add = add

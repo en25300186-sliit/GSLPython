@@ -5,10 +5,13 @@ Importing this package enables importer-module patching without explicit API cal
 
 from __future__ import annotations
 
+import atexit
+import hashlib
 import inspect
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -26,6 +29,16 @@ class AccelerationReport:
 _thread_state = threading.local()
 _runtime_artifacts: list[str] = []
 _compilation_guard: set[str] = set()
+_extension_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
+
+
+def _cleanup_runtime_artifacts() -> None:
+    while _runtime_artifacts:
+        path = _runtime_artifacts.pop()
+        shutil.rmtree(path, ignore_errors=True)
+
+
+atexit.register(_cleanup_runtime_artifacts)
 
 
 def _set_last_report(report: AccelerationReport) -> None:
@@ -143,8 +156,9 @@ def _compile_importer_module(module_name: str, module_file: str) -> ModuleType |
     except Exception:
         return None
 
+    module_suffix = hashlib.sha256(module_file.encode("utf-8")).hexdigest()[:16]
     compiled_module_name = (
-        f"_gslpython_compiled_{module_name.replace('.', '_')}_{abs(hash(module_file))}"
+        f"_gslpython_compiled_{module_name.replace('.', '_')}_{module_suffix}"
     )
     build_root = tempfile.mkdtemp(prefix="gslpython-build-")
     _runtime_artifacts.append(build_root)
@@ -177,7 +191,7 @@ def _compile_importer_module(module_name: str, module_file: str) -> ModuleType |
         for filename in files:
             if not filename.startswith(compiled_module_name):
                 continue
-            if not any(filename.endswith(suffix) for suffix in importlib.machinery.EXTENSION_SUFFIXES):
+            if not filename.endswith(_extension_suffixes):
                 continue
             extension_path = os.path.join(root, filename)
             return _load_compiled_module(compiled_module_name, extension_path)
