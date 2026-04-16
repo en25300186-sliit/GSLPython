@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+import threading
 from dataclasses import dataclass
 from types import FrameType, FunctionType, ModuleType
 
@@ -18,7 +19,15 @@ class AccelerationReport:
     accelerated_classes: int
 
 
-_last_report = AccelerationReport("<none>", 0, 0)
+_thread_state = threading.local()
+
+
+def _set_last_report(report: AccelerationReport) -> None:
+    _thread_state.last_report = report
+
+
+def _get_last_report() -> AccelerationReport:
+    return getattr(_thread_state, "last_report", AccelerationReport("<none>", 0, 0))
 
 
 def _find_importer_frame() -> FrameType | None:
@@ -48,7 +57,7 @@ def _should_consider_for_patching(name: str, value: object) -> bool:
     return True
 
 
-def _accelerate_function(func: FunctionType) -> FunctionType:
+def _mark_function_accelerated(func: FunctionType) -> FunctionType:
     if getattr(func, "__gslpython_accelerated__", False):
         return func
 
@@ -63,15 +72,15 @@ def _accelerate_class(cls: type) -> bool:
     changed = False
     for name, value in list(vars(cls).items()):
         if isinstance(value, staticmethod):
-            wrapped = staticmethod(_accelerate_function(value.__func__))
+            wrapped = staticmethod(_mark_function_accelerated(value.__func__))
             setattr(cls, name, wrapped)
             changed = True
         elif isinstance(value, classmethod):
-            wrapped = classmethod(_accelerate_function(value.__func__))
+            wrapped = classmethod(_mark_function_accelerated(value.__func__))
             setattr(cls, name, wrapped)
             changed = True
         elif isinstance(value, FunctionType):
-            setattr(cls, name, _accelerate_function(value))
+            setattr(cls, name, _mark_function_accelerated(value))
             changed = True
 
     cls.__gslpython_accelerated__ = True
@@ -88,7 +97,7 @@ def _accelerate_namespace(namespace: dict[str, object], module_name: str) -> Acc
 
         if isinstance(value, FunctionType):
             was_accelerated = getattr(value, "__gslpython_accelerated__", False)
-            accelerated = _accelerate_function(value)
+            accelerated = _mark_function_accelerated(value)
             if not was_accelerated:
                 namespace[name] = accelerated
                 functions += 1
@@ -125,21 +134,21 @@ def _install_frame_trace(frame: FrameType, module_name: str) -> None:
 
 
 def activate() -> AccelerationReport:
-    global _last_report
-
     importer_frame = _find_importer_frame()
     if importer_frame is None:
-        _last_report = AccelerationReport("<unknown>", 0, 0)
-        return _last_report
+        report = AccelerationReport("<unknown>", 0, 0)
+        _set_last_report(report)
+        return report
 
     module_name = importer_frame.f_globals.get("__name__", "<unknown>")
-    _last_report = _accelerate_namespace(importer_frame.f_globals, module_name)
+    report = _accelerate_namespace(importer_frame.f_globals, module_name)
+    _set_last_report(report)
     _install_frame_trace(importer_frame, module_name)
-    return _last_report
+    return report
 
 
 def get_last_report() -> AccelerationReport:
-    return _last_report
+    return _get_last_report()
 
 
 activate()
