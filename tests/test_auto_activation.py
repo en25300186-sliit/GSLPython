@@ -94,6 +94,7 @@ class GSLPythonImportTests(unittest.TestCase):
             ),
         )
 
+        # These values confirm fake compiled members replaced the original runtime definitions.
         self.assertEqual(module.add(5, 3), 2)
         self.assertEqual(module.Math().mul(2, 3), 5)
 

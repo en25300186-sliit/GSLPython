@@ -156,7 +156,7 @@ def _compile_importer_module(module_name: str, module_file: str) -> ModuleType |
     except Exception:
         return None
 
-    module_suffix = hashlib.sha256(module_file.encode("utf-8")).hexdigest()[:16]
+    module_suffix = hashlib.sha256(module_file.encode("utf-8")).hexdigest()[:32]
     compiled_module_name = (
         f"_gslpython_compiled_{module_name.replace('.', '_')}_{module_suffix}"
     )
