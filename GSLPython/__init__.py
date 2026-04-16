@@ -12,10 +12,13 @@ import importlib.machinery
 import importlib.util
 import os
 import shutil
+import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from types import FrameType, FunctionType, ModuleType
 
 
@@ -283,6 +286,140 @@ def activate() -> AccelerationReport:
 
 def get_last_report() -> AccelerationReport:
     return _get_last_report()
+
+
+# ---------------------------------------------------------------------------
+# AOT compilation: Python file → native executable (.out / .exe)
+# ---------------------------------------------------------------------------
+
+def _python_build_flags() -> tuple[list[str], list[str]]:
+    """Return (include_flags, link_flags) needed to embed the Python runtime."""
+    inc = sysconfig.get_path("include")
+    inc_flags = [f"-I{inc}"]
+
+    cfg = sysconfig.get_config_vars()
+    lib_dir = cfg.get("LIBDIR", "")
+    link_flags: list[str] = []
+    if lib_dir:
+        link_flags.append(f"-L{lib_dir}")
+
+    # BLDLIBRARY may already be a linker flag (e.g. "-lpython3.12") or a bare
+    # filename (e.g. "libpython3.12.a").  Prefer constructing the flag from
+    # LDVERSION which is always just the version string (e.g. "3.12").
+    ldversion = cfg.get("LDVERSION") or f"{sys.version_info.major}.{sys.version_info.minor}"
+    link_flags.append(f"-lpython{ldversion}")
+    # Extra flags present on the current platform (dl, m, etc.)
+    for var in ("LIBS", "SYSLIBS"):
+        extra = cfg.get(var, "")
+        if extra:
+            link_flags.extend(extra.split())
+    return inc_flags, link_flags
+
+
+def build_executable(
+    source_file: str | os.PathLike,
+    output_path: str | os.PathLike | None = None,
+) -> str:
+    """Compile *source_file* (a ``.py`` module) into a native binary.
+
+    The compilation pipeline is:
+
+    1. **Cython** translates the Python source to a C translation unit.
+    2. **A single** ``gcc`` invocation compiles + links that C file together
+       with a tiny ``main()`` shim into a self-contained ``.out`` / ``.exe``.
+
+    Parameters
+    ----------
+    source_file:
+        Path to the ``.py`` file to compile.
+    output_path:
+        Desired path for the produced binary.  Defaults to
+        ``<source_stem>.out`` (``<source_stem>.exe`` on Windows) in the same
+        directory as *source_file*.
+
+    Returns
+    -------
+    str
+        Absolute path of the produced binary.
+
+    Raises
+    ------
+    RuntimeError
+        If Cython or the C compiler is not available, or if any step fails.
+    """
+    try:
+        from Cython.Compiler.Main import compile as cython_compile
+        from Cython.Compiler.CmdLine import parse_command_line
+    except ImportError as exc:
+        raise RuntimeError(
+            "Cython is required for build_executable. "
+            "Install it with: pip install cython"
+        ) from exc
+
+    source = Path(source_file).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Source file not found: {source}")
+
+    stem = source.stem
+    if output_path is None:
+        suffix = ".exe" if sys.platform == "win32" else ".out"
+        output = source.with_name(stem + suffix)
+    else:
+        output = Path(output_path).resolve()
+
+    build_dir = Path(tempfile.mkdtemp(prefix="gslpython-aot-"))
+    _runtime_artifacts.append(str(build_dir))
+
+    try:
+        # ------------------------------------------------------------------
+        # Step 1 – Cython: .py → .c
+        # ------------------------------------------------------------------
+        c_file = build_dir / f"{stem}.c"
+        opts, _ = parse_command_line(
+            [
+                "--embed",          # emit a main() that embeds the Python runtime
+                "-3",               # Python 3 semantics
+                "-o", str(c_file),
+                str(source),
+            ]
+        )
+        result = cython_compile(str(source), opts)
+        if result.num_errors:
+            raise RuntimeError(
+                f"Cython failed to compile {source} ({result.num_errors} error(s))"
+            )
+        if not c_file.is_file():
+            raise RuntimeError(f"Cython did not produce expected C file: {c_file}")
+
+        # ------------------------------------------------------------------
+        # Step 2 – single gcc call: .c → native binary
+        # ------------------------------------------------------------------
+        compiler = os.environ.get("CC", shutil.which("gcc") or shutil.which("cc") or "gcc")
+        inc_flags, link_flags = _python_build_flags()
+
+        cmd: list[str] = (
+            [compiler]
+            + inc_flags
+            + ["-O3", "-fwrapv", str(c_file), "-o", str(output)]
+            + link_flags
+        )
+
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"C compilation failed.\nCommand: {' '.join(cmd)}\n"
+                f"stderr:\n{proc.stderr}"
+            )
+    finally:
+        # The build directory is only needed during compilation; clean it up
+        # immediately instead of waiting for process exit.
+        try:
+            _runtime_artifacts.remove(str(build_dir))
+        except ValueError:
+            pass
+        shutil.rmtree(str(build_dir), ignore_errors=True)
+
+    return str(output)
 
 
 activate()
