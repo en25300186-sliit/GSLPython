@@ -28,20 +28,23 @@ def _find_importer_frame() -> FrameType | None:
     while frame:
         module_name = frame.f_globals.get("__name__", "")
         if not module_name.startswith("GSLPython"):
-            candidate = frame
             if not (
                 module_name.startswith("importlib")
                 or module_name.startswith("_frozen_importlib")
             ):
                 return frame
+            if candidate is None:
+                candidate = frame
         frame = frame.f_back
     return candidate
 
 
-def _should_patch(name: str, value: object) -> bool:
+def _should_consider_for_patching(name: str, value: object) -> bool:
     if name.startswith("__"):
         return False
     if isinstance(value, ModuleType):
+        return False
+    if not isinstance(value, (FunctionType, type)):
         return False
     return True
 
@@ -51,11 +54,11 @@ def _accelerate_function(func: FunctionType) -> FunctionType:
         return func
 
     @wraps(func)
-    def accelerated(*args, **kwargs):
+    def wrapped(*args, **kwargs):
         return func(*args, **kwargs)
 
-    accelerated.__gslpython_accelerated__ = True
-    return accelerated
+    wrapped.__gslpython_accelerated__ = True
+    return wrapped
 
 
 def _accelerate_class(cls: type) -> bool:
@@ -85,7 +88,7 @@ def _accelerate_namespace(namespace: dict[str, object], module_name: str) -> Acc
     classes = 0
 
     for name, value in list(namespace.items()):
-        if not _should_patch(name, value):
+        if not _should_consider_for_patching(name, value):
             continue
 
         if isinstance(value, FunctionType):
@@ -102,10 +105,16 @@ def _accelerate_namespace(namespace: dict[str, object], module_name: str) -> Acc
 
 def _install_frame_trace(frame: FrameType, module_name: str) -> None:
     previous_trace = sys.gettrace()
+    last_namespace_size = len(frame.f_globals)
 
     def tracer(current_frame: FrameType, event: str, arg):
+        nonlocal last_namespace_size
+
         if current_frame is frame and event in {"line", "return"}:
-            _accelerate_namespace(current_frame.f_globals, module_name)
+            namespace_size = len(current_frame.f_globals)
+            if event == "return" or namespace_size != last_namespace_size:
+                _accelerate_namespace(current_frame.f_globals, module_name)
+                last_namespace_size = namespace_size
             if event == "return" and sys.gettrace() is tracer:
                 sys.settrace(previous_trace)
                 return previous_trace
